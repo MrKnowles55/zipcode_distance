@@ -1,62 +1,77 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
+import csv
+import map_tool
+from functools import lru_cache
+import pickle
 
 
-def extract_distances(zip_code1, zip_code2):
-    # Runs Chrome in a manner to allow for web scraping without being stopped by Cloudflare
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Run Chrome in headless mode
-    chrome_options.add_argument("--disable-gpu")  # Disable GPU acceleration to improve performance
-    chrome_options.add_argument("--no-sandbox")  # Disable sandbox to avoid Chrome hangs
-    chrome_options.add_argument("--disable-dev-shm-usage")  # Disable shared memory to avoid Chrome crashes
-    chrome_options.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36")
+class DistanceCache:
+    def __init__(self):
+        self.cache = {}
 
-    driver = webdriver.Chrome(options=chrome_options)
+    @lru_cache(maxsize=1000)
+    def get_distance(self, zip1, zip2):
+        # check that zips are not identical
+        if zip1 == zip2:
+            return float(0)
 
-    # Enable JavaScript and cookies
-    driver.execute_script("navigator.webdriver = false;")
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        # check if already cached calculation
+        if (zip1, zip2) in self.cache:
+            return self.cache[(zip1, zip2)]
 
-    # Load the page with Selenium
-    base_url = "https://www.freemaptools.com/distance-between-usa-zip-codes.htm"
-    driver.get(base_url)
+        # else calculates distance
+        distance = map_tool.extract_distances(zip1, zip2)
+        self.cache[(zip1, zip2)] = distance
+        self.cache[(zip2, zip1)] = distance
 
-    # Enter zip codes
-    zip_input1 = driver.find_element(By.NAME, "pointa")
-    zip_input2 = driver.find_element(By.NAME, "pointb")
-    zip_input1.send_keys(zip_code1)
-    zip_input2.send_keys(zip_code2)
+        return distance
 
-    # Click the 'Show' button
-    driver.execute_script("findaandb(document.forms['inp']['pointa'].value,document.forms['inp']['pointb'].value);")
+    def save_cache(self, file_path):
+        with open(file_path, 'wb') as f:
+            pickle.dump(self.cache, f)
 
-    # Wait for code execution
-    time.sleep(5)
-
-    # Wait for the distances to load
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "distance")))
-
-    # Extract the distances
-    distance1 = driver.find_element(By.ID, "distance").get_attribute("value")
-    distance2 = driver.find_element(By.ID, "transport").get_attribute("value")
-
-    print("Distance 1 (As the crow flies):", distance1)
-    print("Distance 2 (By land transport):", distance2)
-
-    # Close the browser
-    driver.quit()
-
-    return distance1, distance2
+    def load_cache(self, file_path):
+        try:
+            with open(file_path, 'rb') as f:
+                self.cache = pickle.load(f)
+        except FileNotFoundError:
+            print(f"No cache file found at {file_path}. Starting with an empty cache.")
 
 
-if __name__ == "__main__":
-    zip_code1 = input("Enter first zip code: ")
-    zip_code2 = input("Enter second zip code: ")
+def extract_csv_data(file_path):
+    data = []
+    with open(file_path, mode="r") as file:
+        reader = csv.reader(file)
+        headers = next(reader)  # Skip the header row
+        for row in reader:
+            data.append(row)
+    return headers, data
 
-    distances = extract_distances(zip_code1, zip_code2)
-    print("Distances:", distances)
+
+cache = DistanceCache()
+cache_save_path = "cache.pkl"
+
+cache.load_cache(cache_save_path)
+
+# Example usage
+file_path = "indiana_locations.csv"
+headers, data = extract_csv_data(file_path)
+
+# Get user input for a zip code
+user_zip_code = input("Enter a zip code: ")
+
+# Dict to store the distances
+distances = {}
+
+# Extract distances for each zip code in the CSV
+for row in data:
+    zip_code2 = row[1]
+    distances[zip_code2] = cache.get_distance(user_zip_code, zip_code2)
+    cache.save_cache(cache_save_path)
+
+
+# Sort distances by value in ascending order
+distances = dict(sorted(distances.items(), key=lambda x: x[1]))
+
+# Print the sorted distances
+for zip, distance in distances.items():
+    print(f"{zip},{distance}")
